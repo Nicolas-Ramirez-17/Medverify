@@ -1,0 +1,774 @@
+openapi: 3.1.0
+info:
+  title: Medverify API
+  version: 0.9.0
+  summary: Contrato entre el frontend (React + TypeScript) y el backend (FastAPI) de Medverify.
+  description: |
+    Plataforma para la validación automatizada de incapacidades médicas mediante comparación documental
+    con registros simulados de una EPS. Proyecto académico UMB – Gerencia de Proyectos de Software 2026.
+
+    **Este archivo es el contrato.** El frontend ya está construido contra él (ver `frontend/src/api/types.ts`
+    y `frontend/src/api/http.ts`). Si el backend necesita cambiar algo, se cambia primero aquí, en un pull
+    request que revisen frontend y backend.
+
+    Convenciones:
+    - JSON en `snake_case`.
+    - Fechas: `YYYY-MM-DD`. Fechas-hora: ISO 8601 con zona (`2026-11-16T19:20:00-05:00`).
+    - Autenticación: `Authorization: Bearer <JWT>` en todo excepto login, registro y `/empresas/publicas`.
+    - Errores: formato estándar de FastAPI. `{"detail": "mensaje"}` o, en 422, `{"detail": [{"loc": [...], "msg": "...", "type": "..."}]}`.
+      El frontend muestra `msg` debajo del campo cuyo nombre es el último elemento de `loc`, así que los mensajes deben estar en español y ser útiles para el usuario.
+    - Códigos: 400 regla de negocio, 401 sin sesión o token vencido, 403 rol sin permiso o cuenta desactivada,
+      404 no existe o no pertenece al usuario, 409 conflicto (duplicado o estado no válido), 413 archivo > 5 MB, 415 archivo no PDF, 422 validación.
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Desarrollo local (docker compose)
+tags:
+  - name: auth
+  - name: solicitudes
+  - name: paneles
+  - name: notificaciones
+  - name: admin
+security:
+  - bearer: []
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Iniciar sesión
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Token" }
+        "401": { description: "Correo o contraseña incorrectos. Mensaje genérico: no revelar cuál de los dos falló." }
+        "403": { description: Cuenta desactivada }
+  /auth/registro/empleado:
+    post:
+      tags: [auth]
+      summary: Registro de empleado (queda con rol empleado)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegistroEmpleadoIn" }
+      responses:
+        "201": { $ref: "#/components/responses/Token" }
+        "409": { description: Ya existe una cuenta con ese correo }
+        "422": { $ref: "#/components/responses/Validacion" }
+  /auth/registro/empresa:
+    post:
+      tags: [auth]
+      summary: Registro de empresa (crea la empresa y su primer usuario con rol empresa)
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegistroEmpresaIn" }
+      responses:
+        "201": { $ref: "#/components/responses/Token" }
+        "409": { description: Ya existe una cuenta con ese correo o una empresa con ese NIT }
+        "422": { $ref: "#/components/responses/Validacion" }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Usuario de la sesión actual
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Usuario" } } }
+        "401": { $ref: "#/components/responses/NoAutenticado" }
+  /auth/password:
+    put:
+      tags: [auth]
+      summary: Cambiar la contraseña propia
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password_actual, password_nueva]
+              properties:
+                password_actual: { type: string }
+                password_nueva: { type: string, minLength: 8, description: "Al menos una mayúscula y un número" }
+      responses:
+        "204": { description: Contraseña actualizada }
+        "400": { description: "La contraseña actual no es correcta (usar loc [body, password_actual] si se responde como 422)" }
+        "422": { $ref: "#/components/responses/Validacion" }
+
+  /empresas/publicas:
+    get:
+      tags: [auth]
+      summary: Empresas activas (solo id y razón social) para el formulario de registro
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/EmpresaPublica" } }
+
+  /usuarios/me:
+    patch:
+      tags: [auth]
+      summary: Actualizar nombre y cargo propios
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                nombre: { type: string, minLength: 5 }
+                cargo: { type: [string, "null"] }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Usuario" } } }
+
+  /paneles/empleado:
+    get:
+      tags: [paneles]
+      summary: Indicadores del empleado (rol empleado)
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/PanelEmpleado" } } }
+        "403": { $ref: "#/components/responses/SinPermiso" }
+  /paneles/empresa:
+    get:
+      tags: [paneles]
+      summary: Indicadores de Talento Humano (rol empresa; admin ve todo el sistema)
+      description: |
+        `por_semana`: 8 semanas consecutivas de 7 días, de la más antigua a la más reciente, que terminan el día de hoy.
+        `horas_promedio_respuesta`: promedio de (decidida_en − creada_en) en horas, sobre solicitudes decididas, con 1 decimal.
+        `pendientes_con_alerta`: pendientes cuya validación NO es `coincide`.
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/PanelEmpresa" } } }
+        "403": { $ref: "#/components/responses/SinPermiso" }
+  /paneles/admin:
+    get:
+      tags: [paneles]
+      summary: Indicadores globales (rol admin)
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/PanelAdmin" } } }
+        "403": { $ref: "#/components/responses/SinPermiso" }
+
+  /solicitudes:
+    get:
+      tags: [solicitudes]
+      summary: Listar solicitudes visibles para el usuario
+      description: |
+        Alcance por rol: **empleado** solo las propias · **empresa** las de empleados de su empresa · **admin** todas.
+        Para el rol empleado `resultado_validacion` SIEMPRE es `null` y el filtro `validacion` se ignora.
+        Búsqueda `q` (sin distinguir mayúsculas) sobre radicado, número de incapacidad, nombre y documento del empleado.
+      parameters:
+        - { name: estado, in: query, schema: { $ref: "#/components/schemas/EstadoSolicitud" } }
+        - { name: validacion, in: query, schema: { $ref: "#/components/schemas/ResultadoValidacion" } }
+        - { name: q, in: query, schema: { type: string } }
+        - { name: orden, in: query, schema: { type: string, enum: [recientes, antiguas], default: recientes }, description: Por creada_en }
+        - { name: pagina, in: query, schema: { type: integer, minimum: 1, default: 1 } }
+        - { name: tamano, in: query, schema: { type: integer, minimum: 1, maximum: 100, default: 20 } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/PaginaSolicitudes" } } }
+    post:
+      tags: [solicitudes]
+      summary: Radicar una incapacidad (solo rol empleado)
+      description: |
+        En una sola transacción: (1) valida campos y archivo, (2) guarda el PDF fuera de la carpeta pública,
+        (3) crea la solicitud en estado `pendiente` con radicado `INC-AAAA-NNNNN`, (4) ejecuta la validación contra
+        `registros_eps` (docs/HANDOFF.md §4), (5) registra historial y auditoría.
+        Después del commit: envía el correo a `empresas.email_notificaciones` y crea la notificación (si el correo
+        falla, la radicación NO se revierte; se guarda el correo con estado `fallido`).
+        El documento del empleado NO viene en el formulario: se toma del usuario autenticado.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [tipo, numero_incapacidad, eps, ips, fecha_inicio, fecha_fin, es_prorroga, archivo]
+              properties:
+                tipo: { $ref: "#/components/schemas/TipoIncapacidad" }
+                numero_incapacidad: { type: string, pattern: "^[A-Z]{2}-\\d{4}-\\d{6}$", example: EG-2026-104521 }
+                eps: { type: string, example: EPS Simulada Andina }
+                ips: { type: string, minLength: 4 }
+                fecha_inicio: { type: string, format: date }
+                fecha_fin: { type: string, format: date, description: ">= fecha_inicio" }
+                es_prorroga: { type: string, enum: ["true", "false"] }
+                archivo: { type: string, format: binary, description: "PDF, máximo 5 MB, debe empezar por los bytes %PDF-" }
+      responses:
+        "201":
+          description: Radicada
+          content: { application/json: { schema: { $ref: "#/components/schemas/Solicitud" } } }
+        "403": { $ref: "#/components/responses/SinPermiso" }
+        "409": { description: "Ya existe una solicitud no rechazada con ese número de incapacidad (loc [body, numero_incapacidad])" }
+        "413": { description: Archivo mayor a 5 MB }
+        "415": { description: El archivo no es un PDF válido }
+        "422": { $ref: "#/components/responses/Validacion" }
+  /solicitudes/{id}:
+    get:
+      tags: [solicitudes]
+      summary: Detalle de una solicitud
+      description: |
+        Para el rol empleado `validacion` es `null`. Cuando la consulta un usuario empresa o admin se registra en
+        auditoría "Consulta de solicitud y PDF".
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Solicitud" } } }
+        "404": { description: No existe o no pertenece al alcance del usuario (no usar 403 para no revelar que existe) }
+  /solicitudes/{id}/decision:
+    patch:
+      tags: [solicitudes]
+      summary: Aprobar o rechazar (solo rol empresa, solo solicitudes de su empresa)
+      description: Registra historial, auditoría y una notificación para el empleado.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DecisionIn" }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Solicitud" } } }
+        "403": { $ref: "#/components/responses/SinPermiso" }
+        "404": { description: No existe o no es de su empresa }
+        "409": { description: La solicitud ya fue decidida }
+        "422": { description: "Rechazo sin observación de al menos 10 caracteres (loc [body, observacion])" }
+  /solicitudes/{id}/documento:
+    get:
+      tags: [solicitudes]
+      summary: Descargar el PDF del certificado
+      description: Mismo alcance que GET /solicitudes/{id}. Responder con `Content-Type application/pdf` y `Content-Disposition inline`.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      responses:
+        "200":
+          description: El PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+        "404": { description: No existe o sin acceso }
+
+  /notificaciones:
+    get:
+      tags: [notificaciones]
+      summary: Últimas 20 notificaciones del usuario (más recientes primero)
+      description: Empleado → las dirigidas a él. Empresa → las de su empresa. Admin → todas las de empresas.
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Notificacion" } }
+  /notificaciones/marcar-leidas:
+    post:
+      tags: [notificaciones]
+      summary: Marcar como leídas todas las notificaciones visibles para el usuario
+      responses:
+        "204": { description: OK }
+  /correos:
+    get:
+      tags: [notificaciones]
+      summary: Registro de correos enviados (empresa → los de su empresa; admin → todos)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Correo" } }
+        "403": { $ref: "#/components/responses/SinPermiso" }
+
+  /usuarios:
+    get:
+      tags: [admin]
+      summary: Listar usuarios (admin)
+      parameters: [{ name: q, in: query, schema: { type: string }, description: "Nombre, correo o documento" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Usuario" } }
+    post:
+      tags: [admin]
+      summary: Crear usuario (admin)
+      description: El backend genera una contraseña temporal aleatoria y envía por correo un enlace para definirla. Nunca se devuelve en la respuesta.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UsuarioIn" }
+      responses:
+        "201":
+          description: Creado
+          content: { application/json: { schema: { $ref: "#/components/schemas/Usuario" } } }
+        "409": { description: Correo ya registrado }
+        "422": { $ref: "#/components/responses/Validacion" }
+  /usuarios/{id}:
+    patch:
+      tags: [admin]
+      summary: Cambiar rol, activar/desactivar o editar datos (admin)
+      description: Un admin no puede cambiar su propio rol ni desactivarse (400). Cada cambio de rol o estado va a auditoría.
+      parameters: [{ $ref: "#/components/parameters/Id" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UsuarioPatch" }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/Usuario" } } }
+        "400": { description: Intento de cambiar el rol propio o desactivarse }
+        "404": { description: No existe }
+  /empresas:
+    get:
+      tags: [admin]
+      summary: Listar empresas (admin)
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/Empresa" } }
+    post:
+      tags: [admin]
+      summary: Registrar empresa (admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/EmpresaIn" }
+      responses:
+        "201":
+          description: Creada
+          content: { application/json: { schema: { $ref: "#/components/schemas/Empresa" } } }
+        "409": { description: NIT ya registrado }
+        "422": { $ref: "#/components/responses/Validacion" }
+  /eps/registros:
+    get:
+      tags: [admin]
+      summary: Registros de la EPS simulada (admin)
+      parameters: [{ name: q, in: query, schema: { type: string }, description: "Número, documento o nombre" }]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: "#/components/schemas/RegistroEps" } }
+    post:
+      tags: [admin]
+      summary: Crear registro (admin). `dias` lo calcula el servidor.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegistroEpsIn" }
+      responses:
+        "201":
+          description: Creado
+          content: { application/json: { schema: { $ref: "#/components/schemas/RegistroEps" } } }
+        "409": { description: Número ya existe }
+        "422": { $ref: "#/components/responses/Validacion" }
+  /eps/registros/{numero}:
+    parameters:
+      - { name: numero, in: path, required: true, schema: { type: string } }
+    put:
+      tags: [admin]
+      summary: Editar registro (admin). El número no cambia. No re-valida solicitudes ya validadas.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RegistroEpsIn" }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/RegistroEps" } } }
+        "404": { description: No existe }
+    delete:
+      tags: [admin]
+      summary: Eliminar registro (admin)
+      responses:
+        "204": { description: Eliminado }
+        "404": { description: No existe }
+  /auditoria:
+    get:
+      tags: [admin]
+      summary: Eventos de auditoría, más recientes primero (admin)
+      parameters:
+        - { name: q, in: query, schema: { type: string }, description: "Usuario, acción u objeto" }
+        - { name: pagina, in: query, schema: { type: integer, default: 1 } }
+        - { name: tamano, in: query, schema: { type: integer, default: 50, maximum: 200 } }
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/PaginaAuditoria" } } }
+  /sistema/estado:
+    get:
+      tags: [admin]
+      summary: Estado de los servicios (admin)
+      description: Como mínimo comprobar la base de datos (`SELECT 1`), el SMTP (conexión) y la carpeta de PDF (escritura).
+      responses:
+        "200":
+          description: OK
+          content: { application/json: { schema: { $ref: "#/components/schemas/EstadoSistema" } } }
+
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: integer } }
+  responses:
+    Token:
+      description: Sesión iniciada
+      content: { application/json: { schema: { $ref: "#/components/schemas/TokenResponse" } } }
+    NoAutenticado: { description: Falta el token o está vencido }
+    SinPermiso: { description: El rol no tiene permiso o la cuenta está desactivada }
+    Validacion:
+      description: Datos inválidos
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              detail:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    loc: { type: array, items: { type: [string, integer] }, example: [body, email] }
+                    msg: { type: string, example: Escribe un correo válido. }
+                    type: { type: string }
+  schemas:
+    Rol: { type: string, enum: [empleado, empresa, admin] }
+    EstadoSolicitud: { type: string, enum: [pendiente, aprobada, rechazada] }
+    ResultadoValidacion: { type: string, enum: [coincide, inconsistente, no_encontrada] }
+    TipoIncapacidad: { type: string, enum: [enfermedad_general, licencia_maternidad, licencia_paternidad] }
+    Usuario:
+      type: object
+      required: [id, nombre, documento, email, rol, empresa_id, cargo, activo, creado_en]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        documento: { type: string, description: Cédula sin puntos (6–10 dígitos) }
+        email: { type: string, format: email }
+        rol: { $ref: "#/components/schemas/Rol" }
+        empresa_id: { type: [integer, "null"], description: null para admin }
+        cargo: { type: [string, "null"] }
+        activo: { type: boolean }
+        creado_en: { type: string, format: date-time }
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, usuario]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, const: bearer }
+        usuario: { $ref: "#/components/schemas/Usuario" }
+    RegistroEmpleadoIn:
+      type: object
+      required: [nombre, documento, email, password, empresa_id, acepta_tratamiento_datos]
+      properties:
+        nombre: { type: string, minLength: 5 }
+        documento: { type: string, pattern: "^\\d{6,10}$" }
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8, description: Al menos una mayúscula y un número }
+        empresa_id: { type: integer, description: Debe ser una empresa activa }
+        acepta_tratamiento_datos: { type: boolean, const: true, description: "Ley 1581 de 2012: guardar fecha de aceptación" }
+    RegistroEmpresaIn:
+      type: object
+      required: [razon_social, nit, ciudad, email, password, acepta_tratamiento_datos]
+      properties:
+        razon_social: { type: string, minLength: 4 }
+        nit: { type: string, pattern: "^\\d{9}-?\\d$", description: Se aceptan puntos en la entrada; quitarlos antes de validar }
+        ciudad: { type: string }
+        email: { type: string, format: email, description: Será también el email_notificaciones de la empresa }
+        password: { type: string, minLength: 8 }
+        acepta_tratamiento_datos: { type: boolean, const: true }
+    EmpresaPublica:
+      type: object
+      required: [id, razon_social]
+      properties:
+        id: { type: integer }
+        razon_social: { type: string }
+    Empresa:
+      type: object
+      required: [id, razon_social, nit, ciudad, email_notificaciones, activa, total_empleados]
+      properties:
+        id: { type: integer }
+        razon_social: { type: string }
+        nit: { type: string }
+        ciudad: { type: string }
+        email_notificaciones: { type: string, format: email }
+        activa: { type: boolean }
+        total_empleados: { type: integer, description: Usuarios con rol empleado de la empresa }
+    EmpresaIn:
+      type: object
+      required: [razon_social, nit, ciudad, email_notificaciones]
+      properties:
+        razon_social: { type: string }
+        nit: { type: string }
+        ciudad: { type: string }
+        email_notificaciones: { type: string, format: email }
+    UsuarioIn:
+      type: object
+      required: [nombre, documento, email, rol, empresa_id, cargo]
+      properties:
+        nombre: { type: string }
+        documento: { type: string }
+        email: { type: string, format: email }
+        rol: { $ref: "#/components/schemas/Rol" }
+        empresa_id: { type: [integer, "null"], description: Obligatorio salvo para admin }
+        cargo: { type: [string, "null"] }
+    UsuarioPatch:
+      type: object
+      properties:
+        rol: { $ref: "#/components/schemas/Rol" }
+        activo: { type: boolean }
+        nombre: { type: string }
+        cargo: { type: [string, "null"] }
+    CampoValidacion:
+      type: object
+      required: [campo, etiqueta, valor_radicado, valor_eps, coincide]
+      properties:
+        campo: { type: string, enum: [documento, tipo, fecha_inicio, fecha_fin, dias, eps] }
+        etiqueta: { type: string, example: Fecha de inicio }
+        valor_radicado: { type: string, description: "Fechas en YYYY-MM-DD; tipo con su etiqueta legible (Enfermedad general)" }
+        valor_eps: { type: string }
+        coincide: { type: boolean }
+    Validacion:
+      type: object
+      required: [resultado, porcentaje, campos, registro_eps_numero, registro_eps_ips, validado_en]
+      properties:
+        resultado: { $ref: "#/components/schemas/ResultadoValidacion" }
+        porcentaje: { type: integer, minimum: 0, maximum: 100 }
+        campos: { type: array, items: { $ref: "#/components/schemas/CampoValidacion" }, description: Vacío si no_encontrada; si no, 6 campos en el orden documento, tipo, fecha_inicio, fecha_fin, dias, eps }
+        registro_eps_numero: { type: [string, "null"] }
+        registro_eps_ips: { type: [string, "null"] }
+        validado_en: { type: string, format: date-time }
+    EventoHistorial:
+      type: object
+      required: [id, fecha, actor, accion, detalle]
+      properties:
+        id: { type: integer }
+        fecha: { type: string, format: date-time }
+        actor: { type: string, description: Nombre del usuario o "Sistema" }
+        accion: { type: string, example: Validación automática }
+        detalle: { type: string }
+    EmpleadoRef:
+      type: object
+      required: [id, nombre, documento, cargo]
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        documento: { type: string }
+        cargo: { type: [string, "null"] }
+    SolicitudResumen:
+      type: object
+      required: [id, radicado, empleado, tipo, numero_incapacidad, fecha_inicio, fecha_fin, dias, estado, resultado_validacion, creada_en]
+      properties:
+        id: { type: integer }
+        radicado: { type: string, example: INC-2026-00158 }
+        empleado: { $ref: "#/components/schemas/EmpleadoRef" }
+        tipo: { $ref: "#/components/schemas/TipoIncapacidad" }
+        numero_incapacidad: { type: string }
+        fecha_inicio: { type: string, format: date }
+        fecha_fin: { type: string, format: date }
+        dias: { type: integer, description: Días calendario, ambos extremos incluidos }
+        estado: { $ref: "#/components/schemas/EstadoSolicitud" }
+        resultado_validacion:
+          oneOf: [{ $ref: "#/components/schemas/ResultadoValidacion" }, { type: "null" }]
+          description: null para el rol empleado
+        creada_en: { type: string, format: date-time }
+    Solicitud:
+      allOf:
+        - $ref: "#/components/schemas/SolicitudResumen"
+        - type: object
+          required: [eps, ips, es_prorroga, documento, observacion, decidida_por, decidida_en, validacion, historial]
+          properties:
+            eps: { type: string }
+            ips: { type: string }
+            es_prorroga: { type: boolean }
+            documento:
+              type: object
+              required: [nombre, tamano_bytes]
+              properties:
+                nombre: { type: string }
+                tamano_bytes: { type: integer }
+            observacion: { type: [string, "null"] }
+            decidida_por: { type: [string, "null"], description: Nombre de quien decidió }
+            decidida_en: { type: [string, "null"], format: date-time }
+            validacion:
+              oneOf: [{ $ref: "#/components/schemas/Validacion" }, { type: "null" }]
+              description: null para el rol empleado
+            historial: { type: array, items: { $ref: "#/components/schemas/EventoHistorial" }, description: Orden cronológico ascendente }
+    DecisionIn:
+      type: object
+      required: [estado, observacion]
+      properties:
+        estado: { type: string, enum: [aprobada, rechazada] }
+        observacion: { type: [string, "null"], description: Obligatoria (mín. 10 caracteres) si estado = rechazada }
+    PaginaSolicitudes:
+      type: object
+      required: [items, total, pagina, tamano]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/SolicitudResumen" } }
+        total: { type: integer }
+        pagina: { type: integer }
+        tamano: { type: integer }
+    RegistroEps:
+      type: object
+      required: [numero, documento, nombre_paciente, tipo, fecha_inicio, fecha_fin, dias, eps, ips]
+      properties:
+        numero: { type: string }
+        documento: { type: string }
+        nombre_paciente: { type: string }
+        tipo: { $ref: "#/components/schemas/TipoIncapacidad" }
+        fecha_inicio: { type: string, format: date }
+        fecha_fin: { type: string, format: date }
+        dias: { type: integer }
+        eps: { type: string }
+        ips: { type: string }
+    RegistroEpsIn:
+      type: object
+      required: [numero, documento, nombre_paciente, tipo, fecha_inicio, fecha_fin, eps, ips]
+      properties:
+        numero: { type: string, pattern: "^[A-Z]{2}-\\d{4}-\\d{6}$" }
+        documento: { type: string, pattern: "^\\d{6,10}$" }
+        nombre_paciente: { type: string }
+        tipo: { $ref: "#/components/schemas/TipoIncapacidad" }
+        fecha_inicio: { type: string, format: date }
+        fecha_fin: { type: string, format: date }
+        eps: { type: string }
+        ips: { type: string }
+    Correo:
+      type: object
+      required: [id, para, asunto, enviado_en, estado, solicitud_id, radicado, empleado, tipo, fecha_inicio, fecha_fin, dias, resultado_validacion]
+      properties:
+        id: { type: integer }
+        para: { type: string, format: email }
+        asunto: { type: string, example: "Nueva incapacidad radicada · INC-2026-00158" }
+        enviado_en: { type: string, format: date-time }
+        estado: { type: string, enum: [enviado, fallido] }
+        solicitud_id: { type: integer }
+        radicado: { type: string }
+        empleado: { type: string }
+        tipo: { $ref: "#/components/schemas/TipoIncapacidad" }
+        fecha_inicio: { type: string, format: date }
+        fecha_fin: { type: string, format: date }
+        dias: { type: integer }
+        resultado_validacion: { $ref: "#/components/schemas/ResultadoValidacion" }
+    Notificacion:
+      type: object
+      required: [id, mensaje, creada_en, leida, solicitud_id]
+      properties:
+        id: { type: integer }
+        mensaje: { type: string }
+        creada_en: { type: string, format: date-time }
+        leida: { type: boolean }
+        solicitud_id: { type: [integer, "null"] }
+    EventoAuditoria:
+      type: object
+      required: [id, fecha, usuario, rol, accion, objeto, ip]
+      properties:
+        id: { type: integer }
+        fecha: { type: string, format: date-time }
+        usuario: { type: string }
+        rol: { type: string, enum: [empleado, empresa, admin, sistema] }
+        accion: { type: string }
+        objeto: { type: string }
+        ip: { type: string }
+    PaginaAuditoria:
+      type: object
+      required: [items, total, pagina, tamano]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/EventoAuditoria" } }
+        total: { type: integer }
+        pagina: { type: integer }
+        tamano: { type: integer }
+    PanelEmpleado:
+      type: object
+      required: [pendientes, aprobadas, rechazadas, dias_aprobados_anio]
+      properties:
+        pendientes: { type: integer }
+        aprobadas: { type: integer }
+        rechazadas: { type: integer }
+        dias_aprobados_anio: { type: integer, description: Suma de días de solicitudes aprobadas que inician en el año en curso }
+    PanelEmpresa:
+      type: object
+      required: [pendientes, pendientes_con_alerta, aprobadas, rechazadas, horas_promedio_respuesta, por_semana, por_validacion]
+      properties:
+        pendientes: { type: integer }
+        pendientes_con_alerta: { type: integer }
+        aprobadas: { type: integer }
+        rechazadas: { type: integer }
+        horas_promedio_respuesta: { type: number }
+        por_semana:
+          type: array
+          minItems: 8
+          maxItems: 8
+          items:
+            type: object
+            required: [semana_inicio, total]
+            properties:
+              semana_inicio: { type: string, format: date }
+              total: { type: integer }
+        por_validacion:
+          type: object
+          required: [coincide, inconsistente, no_encontrada]
+          properties:
+            coincide: { type: integer }
+            inconsistente: { type: integer }
+            no_encontrada: { type: integer }
+    PanelAdmin:
+      type: object
+      required: [usuarios_activos, usuarios_total, usuarios_por_rol, empresas, registros_eps, solicitudes, correos_enviados]
+      properties:
+        usuarios_activos: { type: integer }
+        usuarios_total: { type: integer }
+        usuarios_por_rol:
+          type: object
+          required: [empleado, empresa, admin]
+          properties:
+            empleado: { type: integer }
+            empresa: { type: integer }
+            admin: { type: integer }
+        empresas: { type: integer }
+        registros_eps: { type: integer }
+        solicitudes: { type: integer }
+        correos_enviados: { type: integer }
+    EstadoServicio:
+      type: object
+      required: [nombre, estado, detalle]
+      properties:
+        nombre: { type: string }
+        estado: { type: string, enum: [operativo, degradado, caido] }
+        detalle: { type: string }
+    EstadoSistema:
+      type: object
+      required: [version, disponibilidad_30d, ultima_copia, servicios]
+      properties:
+        version: { type: string }
+        disponibilidad_30d: { type: number, description: Porcentaje 0–100 }
+        ultima_copia: { type: string, format: date-time }
+        servicios: { type: array, items: { $ref: "#/components/schemas/EstadoServicio" } }

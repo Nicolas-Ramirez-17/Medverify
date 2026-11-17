@@ -1,0 +1,54 @@
+# Medverify · entorno de desarrollo
+#   docker compose up -d db mailpit      → base de datos sembrada + bandeja de correo (http://localhost:8025)
+#   docker compose up -d web             → frontend compilado en http://localhost:8080
+# El servicio "api" queda listo para cuando exista la carpeta backend/ (FastAPI). Ver docs/HANDOFF.md.
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: medverify
+      POSTGRES_USER: medverify
+      POSTGRES_PASSWORD: medverify_dev   # solo desarrollo
+    ports: ["5432:5432"]
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./docs/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql:ro
+      - ./docs/seed.sql:/docker-entrypoint-initdb.d/02_seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U medverify -d medverify"]
+      interval: 5s
+      retries: 10
+
+  mailpit:
+    image: axllent/mailpit:latest
+    ports:
+      - "8025:8025"   # bandeja web
+      - "1025:1025"   # SMTP
+
+  # api:
+  #   build: ./backend
+  #   environment:
+  #     DATABASE_URL: postgresql+psycopg://medverify:medverify_dev@db:5432/medverify
+  #     JWT_SECRET: cambia-esto-en-produccion
+  #     SMTP_HOST: mailpit
+  #     SMTP_PORT: "1025"
+  #     PDF_DIR: /data/pdf
+  #     CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+  #     FRONTEND_URL: http://localhost:5173
+  #   ports: ["8000:8000"]
+  #   volumes: [pdf_data:/data/pdf]
+  #   depends_on:
+  #     db: { condition: service_healthy }
+  #     mailpit: { condition: service_started }
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        VITE_USE_MOCK: "true"                         # pon "false" cuando la API exista
+        VITE_API_URL: http://localhost:8000/api/v1
+    ports: ["8080:80"]
+
+volumes:
+  db_data:
+  pdf_data:
