@@ -25,27 +25,27 @@ services:
       - "8025:8025"   # bandeja web
       - "1025:1025"   # SMTP
 
-  # api:
-  #   build: ./backend
-  #   environment:
-  #     DATABASE_URL: postgresql+psycopg://medverify:medverify_dev@db:5432/medverify
-  #     JWT_SECRET: cambia-esto-en-produccion
-  #     SMTP_HOST: mailpit
-  #     SMTP_PORT: "1025"
-  #     PDF_DIR: /data/pdf
-  #     CORS_ORIGINS: http://localhost:5173,http://localhost:8080
-  #     FRONTEND_URL: http://localhost:5173
-  #   ports: ["8000:8000"]
-  #   volumes: [pdf_data:/data/pdf]
-  #   depends_on:
-  #     db: { condition: service_healthy }
-  #     mailpit: { condition: service_started }
+  api:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+psycopg://medverify:medverify_dev@db:5432/medverify
+      JWT_SECRET: cambia-esto-en-produccion
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      PDF_DIR: /data/pdf
+      CORS_ORIGINS: http://localhost:5173,http://localhost:8080
+      FRONTEND_URL: http://localhost:5173
+    ports: ["8000:8000"]
+    volumes: [pdf_data:/data/pdf]
+    depends_on:
+      db: { condition: service_healthy }
+      mailpit: { condition: service_started }
 
   web:
     build:
       context: ./frontend
       args:
-        VITE_USE_MOCK: "true"                         # pon "false" cuando la API exista
+        VITE_USE_MOCK: "false"
         VITE_API_URL: http://localhost:8000/api/v1
     ports: ["8080:80"]
 
