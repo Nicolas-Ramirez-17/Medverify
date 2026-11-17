@@ -377,7 +377,7 @@ def decidir_solicitud(
     ahora = ahora_utc()
     s.estado = decision.estado
     s.observacion = decision.observacion
-    s.decidida_por = usuario.id
+    s.decisor = usuario
     s.decidida_en = ahora
 
     es_aprobada = decision.estado == 'aprobada'

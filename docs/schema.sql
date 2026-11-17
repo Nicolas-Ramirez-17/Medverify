@@ -38,7 +38,7 @@ CREATE TABLE registros_eps (
   tipo             TEXT NOT NULL CHECK (tipo IN ('enfermedad_general','licencia_maternidad','licencia_paternidad')),
   fecha_inicio     DATE NOT NULL,
   fecha_fin        DATE NOT NULL CHECK (fecha_fin >= fecha_inicio),
-  dias             INTEGER GENERATED ALWAYS AS (fecha_fin - fecha_inicio + 1) STORED,
+  dias             INTEGER NOT NULL,
   eps              TEXT NOT NULL,
   ips              TEXT NOT NULL
 );
@@ -55,7 +55,7 @@ CREATE TABLE solicitudes (
   ips                  TEXT        NOT NULL,
   fecha_inicio         DATE        NOT NULL,
   fecha_fin            DATE        NOT NULL CHECK (fecha_fin >= fecha_inicio),
-  dias                 INTEGER GENERATED ALWAYS AS (fecha_fin - fecha_inicio + 1) STORED,
+  dias                 INTEGER NOT NULL,
   es_prorroga          BOOLEAN     NOT NULL DEFAULT FALSE,
   -- documento PDF (el archivo vive en disco/volumen, fuera de la carpeta pública)
   documento_nombre     TEXT        NOT NULL,                   -- nombre original, solo para mostrar
@@ -130,3 +130,18 @@ CREATE TABLE auditoria (
   ip              TEXT        NOT NULL DEFAULT ''
 );
 CREATE INDEX auditoria_fecha ON auditoria (fecha DESC);
+
+-- Dias calendario (ambos extremos incluidos). Se calculan con un trigger y no con una columna
+-- GENERATED, porque el backend envia el valor al insertar; la base lo recalcula siempre.
+CREATE FUNCTION calcular_dias() RETURNS trigger AS $$
+BEGIN
+  NEW.dias := NEW.fecha_fin - NEW.fecha_inicio + 1;
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER registros_eps_dias BEFORE INSERT OR UPDATE ON registros_eps
+  FOR EACH ROW EXECUTE FUNCTION calcular_dias();
+
+CREATE TRIGGER solicitudes_dias BEFORE INSERT OR UPDATE ON solicitudes
+  FOR EACH ROW EXECUTE FUNCTION calcular_dias();
